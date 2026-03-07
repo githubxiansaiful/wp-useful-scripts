@@ -1,56 +1,50 @@
 /* ================================
-   MANUAL WOOCOMMERCE CURRENCY SWITCHER
+   SMART WOOCOMMERCE CURRENCY SWITCHER
    ================================ */
 
-// Start PHP session
-add_action('init', function () {
-    if (!session_id()) session_start();
-});
-
 
 // --------------------
-// Auto detect EU visitors and set EUR
+// Detect visitor currency
 // --------------------
-add_action('init', function () {
+function manual_detect_currency(){
 
-    if (!isset($_SESSION['manual_currency'])) {
-
-        $ip = $_SERVER['HTTP_CF_CONNECTING_IP'] ?? $_SERVER['REMOTE_ADDR'];
-
-        $response = wp_remote_get("http://ip-api.com/json/{$ip}");
-
-        if (!is_wp_error($response)) {
-
-            $data = json_decode(wp_remote_retrieve_body($response), true);
-
-            if (isset($data['continentCode']) && $data['continentCode'] === 'EU') {
-                $_SESSION['manual_currency'] = 'EUR';
-            } else {
-                $_SESSION['manual_currency'] = 'USD';
-            }
-
-        } else {
-            $_SESSION['manual_currency'] = 'USD';
-        }
+    // If user selected currency manually
+    if(isset($_COOKIE['manual_currency'])){
+        return sanitize_text_field($_COOKIE['manual_currency']);
     }
 
-});
+    // WooCommerce geolocation
+    $location = WC_Geolocation::geolocate_ip();
+    $country  = $location['country'];
+
+    // EU countries list
+    $eu_countries = [
+        'AT','BE','BG','HR','CY','CZ','DK','EE','FI','FR','DE',
+        'GR','HU','IE','IT','LV','LT','LU','MT','NL','PL','PT',
+        'RO','SK','SI','ES','SE'
+    ];
+
+    if(in_array($country, $eu_countries)){
+        return 'EUR';
+    }
+
+    return 'USD';
+}
 
 
 // --------------------
 // Currency selector shortcode
-// Use: [manual_currency_switcher]
 // --------------------
 add_shortcode('manual_currency_switcher', function () {
 
-    $current = isset($_SESSION['manual_currency']) ? $_SESSION['manual_currency'] : 'USD';
+    $current = manual_detect_currency();
 
     $currencies = [
         'USD' => 'USD ($)',
         'EUR' => 'EUR (€)',
     ];
 
-    $html = '<form method="post" style="display:inline-block;">
+    $html = '<form method="post">
     <select name="manual_currency" onchange="this.form.submit()">';
 
     foreach ($currencies as $code => $label) {
@@ -64,33 +58,53 @@ add_shortcode('manual_currency_switcher', function () {
 });
 
 
-// Save selection
+// --------------------
+// Save user currency choice
+// --------------------
 add_action('init', function () {
-    if (isset($_POST['manual_currency'])) {
-        $_SESSION['manual_currency'] = sanitize_text_field($_POST['manual_currency']);
+
+    if(isset($_POST['manual_currency'])){
+
+        setcookie(
+            'manual_currency',
+            sanitize_text_field($_POST['manual_currency']),
+            time() + (30 * DAY_IN_SECONDS),
+            COOKIEPATH,
+            COOKIE_DOMAIN
+        );
+
+        $_COOKIE['manual_currency'] = sanitize_text_field($_POST['manual_currency']);
     }
+
 });
 
 
 // --------------------
 // Currency rates
-// Base currency must be USD
 // --------------------
 function manual_currency_rates() {
+
     return [
         'USD' => 1,
         'EUR' => 0.92,
     ];
+
 }
 
 
+// --------------------
 // Current currency
+// --------------------
 function manual_current_currency(){
-    return isset($_SESSION['manual_currency']) ? $_SESSION['manual_currency'] : 'USD';
+
+    return manual_detect_currency();
+
 }
 
 
+// --------------------
 // Convert helper
+// --------------------
 function manual_convert_value($price){
 
     if($price === '' || $price === null) return $price;
@@ -107,7 +121,7 @@ function manual_convert_value($price){
 
 
 // --------------------
-// Convert ALL product prices
+// Convert product prices
 // --------------------
 add_filter('woocommerce_product_get_price', fn($p)=>manual_convert_value($p), 99);
 add_filter('woocommerce_product_get_regular_price', fn($p)=>manual_convert_value($p), 99);
@@ -119,14 +133,16 @@ add_filter('woocommerce_variation_prices_sale_price', fn($p)=>manual_convert_val
 
 
 // --------------------
-// Convert variation AJAX JSON prices
+// Fix variation AJAX prices
 // --------------------
 add_filter('woocommerce_available_variation', function($variation){
 
     foreach(['display_price','display_regular_price','price','regular_price','sale_price'] as $key){
+
         if(isset($variation[$key])){
             $variation[$key] = manual_convert_value($variation[$key]);
         }
+
     }
 
     return $variation;
@@ -135,7 +151,7 @@ add_filter('woocommerce_available_variation', function($variation){
 
 
 // --------------------
-// Convert cart + checkout totals
+// Convert cart prices
 // --------------------
 add_action('woocommerce_before_calculate_totals', function($cart){
 
@@ -145,26 +161,31 @@ add_action('woocommerce_before_calculate_totals', function($cart){
 
         $base_price = $item['data']->get_meta('_original_price');
 
-        // store original once
         if(!$base_price){
             $base_price = $item['data']->get_price('edit');
             $item['data']->update_meta_data('_original_price', $base_price);
         }
 
         $item['data']->set_price( manual_convert_value($base_price) );
+
     }
 
 }, 99);
 
 
 // --------------------
-// Change currency symbol
+// Currency symbol
 // --------------------
 add_filter('woocommerce_currency_symbol', function ($symbol){
 
     switch(manual_current_currency()){
-        case 'EUR': return '€';
-        case 'USD': return '$';
+
+        case 'EUR':
+            return '€';
+
+        case 'USD':
+            return '$';
+
     }
 
     return $symbol;
@@ -173,18 +194,22 @@ add_filter('woocommerce_currency_symbol', function ($symbol){
 
 
 // --------------------
-// FINAL PRICE conversion layer (Divi / cached HTML fix)
+// Fix cached HTML
 // --------------------
 add_filter('raw_woocommerce_price', function($price){
+
     return manual_convert_value($price);
+
 }, 99);
 
 
 // --------------------
-// Disable WooCommerce SALE system globally
+// Disable WooCommerce SALE badges
 // --------------------
 add_filter('woocommerce_product_is_on_sale', '__return_false', 999);
 
 add_filter('woocommerce_get_price_html', function($price, $product){
+
     return wc_price( $product->get_price() );
+
 }, 999, 2);
